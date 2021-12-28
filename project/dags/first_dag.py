@@ -2,12 +2,13 @@ import json
 import time
 
 try:
-    from datetime import timedelta
+    from datetime import timedelta, date
     from airflow import DAG
     from airflow.operators.python_operator import PythonOperator
     from airflow.hooks.postgres_hook import PostgresHook
     from datetime import datetime
     import requests
+    import pandas
     import csv
     import psycopg2
 
@@ -20,13 +21,12 @@ except Exception as e:
 def first_task_to_make_request_and_create_csv_file():
     url = "https://community-open-weather-map.p.rapidapi.com/weather"
     states = \
-        ["Bihar"]
-         # "West Bengal", "Sikkim", "Assam", "Arunachal Pradesh", "Manipur", "Meghalaya", "Mizoram", "Nagaland",
-         # "Tripura"]
+        ["Bihar", "West Bengal", "Sikkim", "Assam", "Arunachal Pradesh", "Manipur", "Meghalaya", "Mizoram", "Nagaland",
+         "Tripura"]
     datafile = open('weather.csv', 'w')
     csv_writer = csv.writer(datafile)
     header = \
-        ["ID", "state", "description", "temperature", "feels_like_temperature", "min_temperature", "max_temperature",
+        ["date", "state", "description", "temperature", "feels_like_temperature", "min_temperature", "max_temperature",
          "humidity", "clouds"]
     csv_writer.writerow(header)
     id = 1
@@ -45,7 +45,7 @@ def first_task_to_make_request_and_create_csv_file():
         end_index = response.text.index(')')
         json_response = json.loads(response.text[start_index + 1: end_index])
         print(json_response)
-        row_data = [id, state, json_response['weather'][0]['description'], json_response['main']['temp'],
+        row_data = [date.today(), state, json_response['weather'][0]['description'], json_response['main']['temp'],
                     json_response['main']['feels_like'], json_response['main']['temp_min'],
                     json_response['main']['temp_max'], json_response['main']['humidity'],
                     json_response['clouds']['all']]
@@ -54,28 +54,49 @@ def first_task_to_make_request_and_create_csv_file():
         csv_writer.writerow(row_data)
 
 
-def second_task_conn_db_create_table():
-    conn = psycopg2.connect(host="localhost",
+def second_task_conn_db_create_table(**context):
+    conn = psycopg2.connect(host="postgres",
                             port="5432",
-                            database="weather",
-                            user="postgres",
-                            password="admin")
-    # pg_hook = PostgresHook(postgre_conn_id="postgres_default", schema="airflow")
-    # conn = pg_hook.get_conn()
+                            database="airflow",
+                            user="airflow",
+                            password="airflow")
     cursor = conn.cursor()
     create_table_query = '''CREATE TABLE IF NOT EXISTS Weather
-                 (ID INT PRIMARY KEY     NOT NULL,
-                 state           TEXT    NOT NULL,
-                 description     TEXT  NOT NULL,
-                 temperature REAL,
-                 feels_like_temperature REAL,
-                 min_temperature REAL,
-                 max_temperature REAL,
-                 humidity INT,
-                 clouds TEXT); '''
+                    (date TEXT ,
+                    state  TEXT,
+                    description     TEXT  NOT NULL,
+                    temperature TEXT,
+                    feels_like_temperature TEXT,
+                    min_temperature TEXT,
+                    max_temperature TEXT,
+                    humidity TEXT,
+                    clouds TEXT,
+                    PRIMARY KEY (date, state)); '''
     cursor.execute(create_table_query)
     conn.commit()
     print("Table created successfully in PostgreSQL ")
+    context['postgres'].xcom_push(key='connection', value=conn)
+
+
+def third_task_ingest_data_to_db(**context):
+    conn = context.get('postgres').xcom_pull(key='connection')
+    cursor = conn.cursor()
+    data = pandas.read_csv('weather.csv', header=0)
+    # data.iloc[1, :].to_string(header=False, index=False)
+    print(data.values)
+    try:
+        for index, row in data.iterrows():
+            sql = """INSERT INTO Weather (date, state, description, temperature, feels_like_temperature, min_temperature,
+                            max_temperature, humidity, clouds) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+            result = (str(row['date']), str(row["state"]), str(row["description"]), str(row["temperature"]),
+                      str(row["feels_like_temperature"]), str(row["min_temperature"]),
+                      str(row["max_temperature"]), str(row["humidity"]), str(row["clouds"]))
+            cursor.execute(sql, result)
+            conn.commit()
+        count = cursor.rowcount
+        print(count, "Record inserted successfully into weather table")
+    except (Exception, psycopg2.Error) as error:
+        print("Error while updating data from PostgreSQL", error)
 
 
 with DAG(
@@ -94,8 +115,14 @@ with DAG(
     )
     second_task_conn_db_create_table = PythonOperator(
         task_id="second_task_conn_db_create_table",
-        python_callable=second_task_conn_db_create_table
+        python_callable=second_task_conn_db_create_table,
+        provide_context=True,
+    )
+    third_task_ingest_data_to_db = PythonOperator(
+        task_id="third_task_ingest_data_to_db",
+        python_callable=third_task_ingest_data_to_db,
+        provide_context=True,
     )
 
-first_task_to_make_request_and_create_csv_file >> second_task_conn_db_create_table
+first_task_to_make_request_and_create_csv_file >> second_task_conn_db_create_table >> third_task_ingest_data_to_db
 
