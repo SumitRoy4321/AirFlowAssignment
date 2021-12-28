@@ -54,7 +54,7 @@ def first_task_to_make_request_and_create_csv_file():
         csv_writer.writerow(row_data)
 
 
-def second_task_conn_db_create_table(**context):
+def second_task_conn_db_create_table(**kwargs):
     conn = psycopg2.connect(host="postgres",
                             port="5432",
                             database="airflow",
@@ -75,14 +75,17 @@ def second_task_conn_db_create_table(**context):
     cursor.execute(create_table_query)
     conn.commit()
     print("Table created successfully in PostgreSQL ")
-    context['postgres'].xcom_push(key='connection', value=conn)
+    # kwargs['ti'].xcom_push(key='connection', value=conn)
 
 
-def third_task_ingest_data_to_db(**context):
-    conn = context.get('postgres').xcom_pull(key='connection')
+def third_task_ingest_data_to_db(**kwargs):
+    conn = psycopg2.connect(host="postgres",
+                            port="5432",
+                            database="airflow",
+                            user="airflow",
+                            password="airflow")
     cursor = conn.cursor()
     data = pandas.read_csv('weather.csv', header=0)
-    # data.iloc[1, :].to_string(header=False, index=False)
     print(data.values)
     try:
         for index, row in data.iterrows():
@@ -125,4 +128,3 @@ with DAG(
     )
 
 first_task_to_make_request_and_create_csv_file >> second_task_conn_db_create_table >> third_task_ingest_data_to_db
-
