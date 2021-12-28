@@ -104,7 +104,7 @@ def third_task_ingest_data_to_db(**kwargs):
 
 with DAG(
         dag_id="first_dag",
-        schedule_interval="@daily",
+        schedule_interval="0 6 * * *",
         default_args={
             "owner": "airflow",
             "retries": 1,
